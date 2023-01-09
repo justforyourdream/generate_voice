@@ -1,0 +1,114 @@
+from encoder.params_model import model_embedding_size as speaker_embedding_size
+from utils.argutils import print_args
+from utils.modelutils import check_model_paths
+from synthesizer.inference import Synthesizer
+from encoder import inference as encoder
+from vocoder.wavernn import inference as rnn_vocoder
+from vocoder.hifigan import inference as gan_vocoder
+from vocoder.fregan import inference as fgan_vocoder
+from pathlib import Path
+import numpy as np
+import soundfile as sf
+import librosa
+import argparse
+import torch
+import sys
+import os
+import re
+import cn2an
+import glob
+import time
+from audioread.exceptions import NoBackendError
+
+
+
+#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数
+#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数
+in_fpath= 'your_wav_file.wav'
+file_name= '2'
+enc_model_fpath = Path("encoder/saved_models/pretrained.pt")
+syn_model_fpath = Path("synthesizer/saved_models/wangbingbing1/wangbingbing1.pt")
+voc_model_fpath = Path("vocoder/saved_models/pretrained/g_hifigan.pt")
+
+if voc_model_fpath.name is not None and voc_model_fpath.name.find("hifigan") > -1:
+    vocoder = gan_vocoder
+elif voc_model_fpath.name is not None and voc_model_fpath.name.find("fregan") > -1:
+    vocoder = fgan_vocoder
+else:
+    vocoder = rnn_vocoder
+
+#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数
+#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数#参数
+
+if torch.cuda.is_available():
+    device_id = torch.cuda.current_device()
+    gpu_properties = torch.cuda.get_device_properties(device_id)
+    ## Print some environment information (for debugging purposes)
+    print("Found %d GPUs available. Using GPU %d (%s) of compute capability %d.%d with "
+          "%.1fGb total memory.\n" %
+          (torch.cuda.device_count(),
+           device_id,
+           gpu_properties.name,
+           gpu_properties.major,
+           gpu_properties.minor,
+           gpu_properties.total_memory / 1e9))
+else:
+    print("Using CPU for inference.\n")
+
+print("Preparing the encoder, the synthesizer and the vocoder...")
+encoder.load_model(enc_model_fpath)
+synthesizer = Synthesizer(syn_model_fpath)
+vocoder.load_model(voc_model_fpath)
+encoder_wav = synthesizer.load_preprocess_wav(in_fpath)
+embed, partial_embeds, _ = encoder.embed_utterance(encoder_wav, return_partials=True)
+
+start=time.time()
+my_txt = ""
+with open('F:/newpycharmproject/pythonProject/mockingbirdchina/text_file.txt', "r",encoding='UTF-8') as f:
+    for line in f.readlines():
+        # line = line.strip('\n')
+        my_txt += line
+output = cn2an.transform(my_txt, "an2cn")
+texts =output.split("\n")
+seq = 0
+each_num = 1500
+
+punctuation = '！，。、,'  # punctuate and split/clean text
+processed_texts = []
+cur_num = 0
+for text in texts:
+    for processed_text in re.sub(r'[{}]+'.format(punctuation), '\n', text).split('\n'):
+        if processed_text:
+            processed_texts.append(processed_text.strip())
+            cur_num += len(processed_text.strip())
+
+# get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+#get_one_wav#get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+# get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+# get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+embeds = [embed] * len(processed_texts)
+specs = synthesizer.synthesize_spectrograms(processed_texts, embeds, style_idx=-1, min_stop_token=4, steps=400)
+breaks = [spec.shape[1] for spec in specs]
+spec = np.concatenate(specs, axis=1)
+generated_wav, output_sample_rate = vocoder.infer_waveform(spec)
+b_ends = np.cumsum(np.array(breaks) * synthesizer.hparams.hop_size)
+b_starts = np.concatenate(([0], b_ends[:-1]))
+wavs = [generated_wav[start:end] for start, end, in zip(b_starts, b_ends)]
+breaks = [np.zeros(int(0.15 * synthesizer.sample_rate))] * len(breaks)
+generated_wav = np.concatenate([i for w, b in zip(wavs, breaks) for i in (w, b)])
+generated_wav = encoder.preprocess_wav(generated_wav)
+generated_wav = generated_wav / np.abs(generated_wav).max() * 0.97
+#model = os.path.basename(in_fpath)
+model = 'asdasf'
+filename = "%s_%s.wav" % (file_name,model)  #%s 格式化字符串  #%d指的是整型
+sf.write(filename, generated_wav, synthesizer.sample_rate)
+print("\nSaved output as %s\n\n" % filename)
+end=time.time()
+print('running time:%s seconds'%(end-start))
+# get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+#get_one_wav#get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+# get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+# get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav #get one wav
+
+
+
